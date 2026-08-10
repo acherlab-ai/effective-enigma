@@ -3,6 +3,7 @@ import os
 import json
 from collections import defaultdict
 from pathlib import Path
+from datetime import date
 
 import httpx
 import zalo_bot
@@ -222,6 +223,19 @@ CONTEXTS_FILE = DATA_DIR / "contexts_store.json"
 
 FACTS_FILE = DATA_DIR / "facts_store.json"
 
+# Thống kê: số user, số tin nhắn, số token đã dùng — trang web
+# admin (admin_web.py) sẽ đọc chung file này để vẽ biểu đồ.
+STATS_FILE = DATA_DIR / "stats_store.json"
+
+# Trạng thái bảo trì — web admin bật/tắt, bot đọc để quyết định
+# có trả lời bình thường hay báo đang bảo trì.
+ADMIN_STATE_FILE = DATA_DIR / "admin_state.json"
+
+DEFAULT_MAINTENANCE_MESSAGE = (
+    "Bringh đang bảo trì xíu nha 🛠️ "
+    "Lát quay lại nói chuyện tiếp nhé!"
+)
+
 
 def _load_json(path, default):
 
@@ -278,6 +292,137 @@ contexts = defaultdict(
 
 # Trí nhớ dài hạn riêng từng chat: {chat_id: "văn bản mô tả facts"}
 long_term_facts = _load_json(FACTS_FILE, {})
+
+
+def _default_stats():
+
+    return {
+        "total_messages": 0,
+        "total_tokens": 0,
+        "messages_by_day": {},
+        "tokens_by_day": {},
+        "users": {}
+    }
+
+
+# Thống kê tổng + theo từng user + theo từng ngày.
+stats = _load_json(
+    STATS_FILE,
+    _default_stats()
+)
+
+# Khoá để tránh nhiều task ghi file thống kê cùng lúc bị đè lên nhau.
+stats_lock = asyncio.Lock()
+
+
+def save_stats():
+
+    _save_json(
+        STATS_FILE,
+        stats
+    )
+
+
+async def record_user_message(
+    chat_id,
+    tokens_used=0
+):
+    """Ghi nhận 1 tin nhắn của user + số token đã dùng cho tin đó."""
+
+    async with stats_lock:
+
+        today = date.today().isoformat()
+
+        stats["total_messages"] = (
+            stats.get("total_messages", 0) + 1
+        )
+
+        stats["total_tokens"] = (
+            stats.get("total_tokens", 0) + tokens_used
+        )
+
+        msg_by_day = stats.setdefault(
+            "messages_by_day",
+            {}
+        )
+
+        msg_by_day[today] = (
+            msg_by_day.get(today, 0) + 1
+        )
+
+        tok_by_day = stats.setdefault(
+            "tokens_by_day",
+            {}
+        )
+
+        tok_by_day[today] = (
+            tok_by_day.get(today, 0) + tokens_used
+        )
+
+        users = stats.setdefault(
+            "users",
+            {}
+        )
+
+        user_entry = users.setdefault(
+            chat_id,
+            {
+                "messages": 0,
+                "tokens": 0,
+                "first_seen": today,
+                "last_seen": today
+            }
+        )
+
+        user_entry["messages"] += 1
+
+        user_entry["tokens"] += tokens_used
+
+        user_entry["last_seen"] = today
+
+        save_stats()
+
+
+async def record_system_tokens(
+    tokens_used
+):
+    """Ghi nhận token dùng cho việc nội bộ (nén context, cập nhật
+    trí nhớ dài hạn...) — không tính vào số tin nhắn của user nào."""
+
+    if not tokens_used:
+
+        return
+
+    async with stats_lock:
+
+        today = date.today().isoformat()
+
+        stats["total_tokens"] = (
+            stats.get("total_tokens", 0) + tokens_used
+        )
+
+        tok_by_day = stats.setdefault(
+            "tokens_by_day",
+            {}
+        )
+
+        tok_by_day[today] = (
+            tok_by_day.get(today, 0) + tokens_used
+        )
+
+        save_stats()
+
+
+def load_admin_state():
+
+    return _load_json(
+        ADMIN_STATE_FILE,
+        {
+            "maintenance": False,
+            "maintenance_message": DEFAULT_MAINTENANCE_MESSAGE
+        }
+    )
+
 
 MAX_MESSAGES = 40
 
@@ -349,13 +494,23 @@ async def call_mistral(
 
         data = response.json()
 
-        return data[
+        content = data[
             "choices"
         ][0][
             "message"
         ][
             "content"
         ]
+
+        tokens_used = data.get(
+            "usage",
+            {}
+        ).get(
+            "total_tokens",
+            0
+        )
+
+        return content, tokens_used
 
 
 # ============================================================
@@ -423,7 +578,7 @@ async def ask_text(
 
     try:
 
-        reply = await call_mistral(
+        reply, tokens_used = await call_mistral(
             messages,
             max_tokens=1200,
             temperature=0.8
@@ -452,6 +607,11 @@ async def ask_text(
             )
 
         save_contexts()
+
+        await record_user_message(
+            chat_id,
+            tokens_used
+        )
 
         return reply
 
@@ -526,7 +686,7 @@ async def ask_image(
 
     try:
 
-        reply = await call_mistral(
+        reply, tokens_used = await call_mistral(
             messages,
             max_tokens=1200,
             temperature=0.7
@@ -554,6 +714,11 @@ async def ask_image(
             )
 
         save_contexts()
+
+        await record_user_message(
+            chat_id,
+            tokens_used
+        )
 
         return reply
 
@@ -635,10 +800,14 @@ Viết ngắn gọn bằng tiếng Việt.
 
     try:
 
-        summary = await call_mistral(
+        summary, tokens_used = await call_mistral(
             summary_messages,
             max_tokens=1000,
             temperature=0.2
+        )
+
+        await record_system_tokens(
+            tokens_used
         )
 
         contexts[chat_id] = [
@@ -752,10 +921,14 @@ về chuỗi rỗng nếu trí nhớ cũ cũng rỗng và không có gì mới).
 
     try:
 
-        updated_facts = await call_mistral(
+        updated_facts, tokens_used = await call_mistral(
             extract_messages,
             max_tokens=600,
             temperature=0.2
+        )
+
+        await record_system_tokens(
+            tokens_used
         )
 
         if updated_facts and updated_facts.strip():
@@ -914,6 +1087,35 @@ async def handle_update(bot, update):
             f"📩 [{chat_id}] "
             f"{message_type}"
         )
+
+        # ==================================================
+        # CHẾ ĐỘ BẢO TRÌ
+        # ==================================================
+        # Đọc trực tiếp từ file mỗi lần có tin nhắn tới, để khi
+        # admin bật/tắt bảo trì trên web thì có hiệu lực ngay,
+        # không cần restart bot.
+
+        admin_state = load_admin_state()
+
+        if admin_state.get(
+            "maintenance",
+            False
+        ):
+
+            maintenance_message = (
+                admin_state.get(
+                    "maintenance_message"
+                )
+                or DEFAULT_MAINTENANCE_MESSAGE
+            )
+
+            await safe_send(
+                bot,
+                chat_id,
+                maintenance_message
+            )
+
+            return
 
         # Mỗi chat_id xử lý tuần tự bên trong nó,
         # nhưng các chat_id khác nhau chạy song song.
@@ -1144,6 +1346,12 @@ async def main():
         print(
             f"MEMORY : {len(long_term_facts)} "
             f"chat có trí nhớ dài hạn"
+        )
+        print(
+            f"STATS  : "
+            f"{len(stats.get('users', {}))} user | "
+            f"{stats.get('total_messages', 0)} tin nhắn | "
+            f"{stats.get('total_tokens', 0)} token"
         )
         print(
             "MODE : xử lý song song nhiều chat"
