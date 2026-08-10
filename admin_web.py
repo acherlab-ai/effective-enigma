@@ -49,8 +49,6 @@ ADMIN_PASSWORD = os.getenv(
     "Hn0961718254@"
 )
 
-# Nên đặt biến môi trường SECRET_KEY cố định khi deploy thật,
-# để phiên đăng nhập không bị đăng xuất mỗi lần restart.
 SECRET_KEY = os.getenv(
     "SECRET_KEY",
     secrets.token_hex(32)
@@ -59,15 +57,11 @@ SECRET_KEY = os.getenv(
 DATA_DIR = Path(
     os.getenv("BRINGH_DATA_DIR", "data")
 )
-
-DATA_DIR.mkdir(
-    parents=True,
-    exist_ok=True
-)
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 STATS_FILE = DATA_DIR / "stats_store.json"
-
 ADMIN_STATE_FILE = DATA_DIR / "admin_state.json"
+BANNED_FILE = DATA_DIR / "banned_users.json"
 
 DEFAULT_MAINTENANCE_MESSAGE = (
     "Bringh đang bảo trì xíu nha 🛠️ "
@@ -78,111 +72,74 @@ DAYS_FOR_CHART = 14
 
 
 # ============================================================
-# ĐỌC / GHI FILE (dùng chung định dạng với bot)
+# ĐỌC / GHI FILE
 # ============================================================
 
 def _load_json(path, default):
-
     if not path.exists():
-
         return default
-
     try:
-
         with open(path, "r", encoding="utf-8") as f:
-
             return json.load(f)
-
     except Exception:
-
         return default
 
 
 def _save_json(path, data):
-
     tmp_path = path.with_suffix(".tmp")
-
     with open(tmp_path, "w", encoding="utf-8") as f:
-
-        json.dump(
-            data,
-            f,
-            ensure_ascii=False,
-            indent=2
-        )
-
+        json.dump(data, f, ensure_ascii=False, indent=2)
     tmp_path.replace(path)
 
 
 def load_stats():
-
-    return _load_json(
-        STATS_FILE,
-        {
-            "total_messages": 0,
-            "total_tokens": 0,
-            "messages_by_day": {},
-            "tokens_by_day": {},
-            "users": {}
-        }
-    )
+    return _load_json(STATS_FILE, {
+        "total_messages": 0,
+        "total_tokens": 0,
+        "messages_by_day": {},
+        "tokens_by_day": {},
+        "users": {}
+    })
 
 
 def load_admin_state():
-
-    return _load_json(
-        ADMIN_STATE_FILE,
-        {
-            "maintenance": False,
-            "maintenance_message": DEFAULT_MAINTENANCE_MESSAGE
-        }
-    )
+    return _load_json(ADMIN_STATE_FILE, {
+        "maintenance": False,
+        "maintenance_message": DEFAULT_MAINTENANCE_MESSAGE
+    })
 
 
 def save_admin_state(state):
+    _save_json(ADMIN_STATE_FILE, state)
 
-    _save_json(
-        ADMIN_STATE_FILE,
-        state
-    )
+
+def load_banned_users():
+    return _load_json(BANNED_FILE, {})
+
+
+def save_banned_users(banned):
+    _save_json(BANNED_FILE, banned)
 
 
 def last_n_days(n):
-
     today = date.today()
-
-    return [
-        (today - timedelta(days=i)).isoformat()
-        for i in range(n - 1, -1, -1)
-    ]
+    return [(today - timedelta(days=i)).isoformat() for i in range(n - 1, -1, -1)]
 
 
 def build_dashboard_payload():
-
     stats = load_stats()
-
     admin_state = load_admin_state()
+    banned = load_banned_users()
 
     days = last_n_days(DAYS_FOR_CHART)
-
     messages_by_day = stats.get("messages_by_day", {})
-
     tokens_by_day = stats.get("tokens_by_day", {})
 
-    chart_messages = [
-        messages_by_day.get(d, 0) for d in days
-    ]
-
-    chart_tokens = [
-        tokens_by_day.get(d, 0) for d in days
-    ]
-
-    chart_labels = [
-        d[5:] for d in days
-    ]  # "MM-DD" cho gọn trên biểu đồ
+    chart_messages = [messages_by_day.get(d, 0) for d in days]
+    chart_tokens = [tokens_by_day.get(d, 0) for d in days]
+    chart_labels = [d[5:] for d in days]
 
     users = stats.get("users", {})
-
     top_users = sorted(
         users.items(),
         key=lambda kv: kv[1].get("tokens", 0),
@@ -216,7 +173,8 @@ def build_dashboard_payload():
         "maintenance_message": admin_state.get(
             "maintenance_message",
             DEFAULT_MAINTENANCE_MESSAGE
-        )
+        ),
+        "banned_users": banned,
     }
 
 
@@ -225,28 +183,20 @@ def build_dashboard_payload():
 # ============================================================
 
 app = Flask(__name__)
-
 app.secret_key = SECRET_KEY
 
 
 def login_required(view_func):
-
     @wraps(view_func)
     def wrapper(*args, **kwargs):
-
         if not session.get("logged_in"):
-
-            return redirect(
-                url_for("login")
-            )
-
+            return redirect(url_for("login"))
         return view_func(*args, **kwargs)
-
     return wrapper
 
 
 # ============================================================
-# GIAO DIỆN — LOGIN
+# LOGIN PAGE
 # ============================================================
 
 LOGIN_PAGE = """
@@ -359,7 +309,7 @@ LOGIN_PAGE = """
 
 
 # ============================================================
-# GIAO DIỆN — DASHBOARD
+# DASHBOARD (có thêm phần quản lý banned)
 # ============================================================
 
 DASHBOARD_PAGE = """
@@ -433,7 +383,6 @@ DASHBOARD_PAGE = """
   }
   .card {
     background: linear-gradient(160deg, #171a26 0%, #12141d 100%);
-    border: 1px solid #21243512;
     border: 1px solid #21243a;
     border-radius: 16px;
     padding: 18px;
@@ -586,6 +535,18 @@ DASHBOARD_PAGE = """
     opacity: 1;
     transform: translateX(-50%) translateY(0);
   }
+  .unban-btn {
+    background: #2b2f45;
+    border: none;
+    color: #f1f2f6;
+    padding: 4px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .unban-btn:hover {
+    background: #3a3f5a;
+  }
 </style>
 </head>
 <body>
@@ -678,6 +639,37 @@ DASHBOARD_PAGE = """
     {% endif %}
   </div>
 
+  <!-- PHẦN QUẢN LÝ BANNED -->
+  <div class="panel">
+    <h2>🚫 User bị ban</h2>
+    <div id="banned-list">
+      {% if data.banned_users %}
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Chat ID</th>
+                <th>Lý do</th>
+                <th>Hành động</th>
+              </tr>
+            </thead>
+            <tbody id="banned-table-body">
+              {% for chat_id, reason in data.banned_users.items() %}
+              <tr data-chat="{{ chat_id }}">
+                <td>{{ chat_id }}</td>
+                <td>{{ reason }}</td>
+                <td><button class="unban-btn" data-chat="{{ chat_id }}">Mở khóa</button></td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% else %}
+        <div class="empty">Không có user nào bị ban.</div>
+      {% endif %}
+    </div>
+  </div>
+
 </main>
 
 <div class="toast" id="toast"></div>
@@ -735,6 +727,7 @@ function showToast(msg) {
   setTimeout(() => t.classList.remove('show'), 2200);
 }
 
+// ---- MAINTENANCE ----
 document.getElementById('maintenance-toggle').addEventListener('change', async (e) => {
   const on = e.target.checked;
   try {
@@ -768,7 +761,93 @@ document.getElementById('save-message-btn').addEventListener('click', async () =
   }
 });
 
-// Tự động cập nhật số liệu mỗi 10 giây, không cần load lại trang
+// ---- BANNED USERS ----
+async function refreshBannedList() {
+  try {
+    const res = await fetch('/api/banned');
+    const banned = await res.json();
+    const container = document.getElementById('banned-list');
+    const tbody = document.getElementById('banned-table-body');
+    if (!tbody) return; // nếu chưa có bảng
+
+    const currentChats = new Set();
+    tbody.querySelectorAll('tr').forEach(row => {
+      currentChats.add(row.dataset.chat);
+    });
+
+    // Xóa những hàng không còn trong danh sách banned mới
+    for (const chat of currentChats) {
+      if (!banned[chat]) {
+        const row = tbody.querySelector(`tr[data-chat="${chat}"]`);
+        if (row) row.remove();
+      }
+    }
+
+    // Thêm các user mới
+    for (const [chat, reason] of Object.entries(banned)) {
+      if (!currentChats.has(chat)) {
+        const tr = document.createElement('tr');
+        tr.dataset.chat = chat;
+        tr.innerHTML = `
+          <td>${chat}</td>
+          <td>${reason}</td>
+          <td><button class="unban-btn" data-chat="${chat}">Mở khóa</button></td>
+        `;
+        tbody.appendChild(tr);
+      }
+    }
+
+    // Nếu không có user nào, hiển thị thông báo
+    if (Object.keys(banned).length === 0) {
+      container.innerHTML = '<div class="empty">Không có user nào bị ban.</div>';
+    } else {
+      // Đảm bảo có bảng
+      if (!document.querySelector('#banned-list table')) {
+        container.innerHTML = `
+          <div class="table-scroll">
+            <table>
+              <thead><tr><th>Chat ID</th><th>Lý do</th><th>Hành động</th></tr></thead>
+              <tbody id="banned-table-body"></tbody>
+            </table>
+          </div>
+        `;
+        // Gọi lại để populate
+        await refreshBannedList();
+      }
+    }
+  } catch (err) {
+    // im lặng
+  }
+}
+
+// Xử lý sự kiện click trên nút unban (delegation)
+document.addEventListener('click', async (e) => {
+  if (e.target.classList.contains('unban-btn')) {
+    const chat_id = e.target.dataset.chat;
+    if (!chat_id) return;
+    try {
+      const res = await fetch('/api/unban', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id })
+      });
+      const data = await res.json();
+      if (data.success) {
+        showToast(`✅ Đã mở khóa user ${chat_id}`);
+        await refreshBannedList();
+      } else {
+        showToast(`❌ Lỗi: ${data.error || 'không xác định'}`);
+      }
+    } catch (err) {
+      showToast('❌ Lỗi kết nối, thử lại nha');
+    }
+  }
+});
+
+// Tự động refresh banned list mỗi 15 giây
+setInterval(refreshBannedList, 15000);
+
+// ---- STATS REFRESH ----
 async function refreshStats() {
   try {
     const res = await fetch('/api/stats');
@@ -779,12 +858,12 @@ async function refreshStats() {
     document.getElementById('stat-tokens').textContent = data.total_tokens;
     document.getElementById('stat-tokens-today').textContent = 'Hôm nay: ' + data.tokens_today;
   } catch (err) {
-    // im lặng bỏ qua nếu mất mạng tạm thời
+    // im lặng
   }
 }
 setInterval(refreshStats, 10000);
-</script>
 
+</script>
 </body>
 </html>
 """
@@ -796,48 +875,26 @@ setInterval(refreshStats, 10000);
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
-
     error = None
-
     if request.method == "POST":
-
-        password = request.form.get(
-            "password",
-            ""
-        )
-
+        password = request.form.get("password", "")
         if password == ADMIN_PASSWORD:
-
             session["logged_in"] = True
-
-            return redirect(
-                url_for("dashboard")
-            )
-
+            return redirect(url_for("dashboard"))
         error = "Sai mật khẩu rồi, thử lại nha."
-
-    return render_template_string(
-        LOGIN_PAGE,
-        error=error
-    )
+    return render_template_string(LOGIN_PAGE, error=error)
 
 
 @app.route("/logout")
 def logout():
-
     session.clear()
-
-    return redirect(
-        url_for("login")
-    )
+    return redirect(url_for("login"))
 
 
 @app.route("/")
 @login_required
 def dashboard():
-
     data = build_dashboard_payload()
-
     return render_template_string(
         DASHBOARD_PAGE,
         data=data,
@@ -848,43 +905,46 @@ def dashboard():
 @app.route("/api/stats")
 @login_required
 def api_stats():
-
-    return jsonify(
-        build_dashboard_payload()
-    )
+    return jsonify(build_dashboard_payload())
 
 
 @app.route("/api/maintenance", methods=["GET", "POST"])
 @login_required
 def api_maintenance():
-
     state = load_admin_state()
-
     if request.method == "POST":
-
-        payload = request.get_json(
-            silent=True
-        ) or {}
-
+        payload = request.get_json(silent=True) or {}
         if "maintenance" in payload:
-
-            state["maintenance"] = bool(
-                payload["maintenance"]
-            )
-
+            state["maintenance"] = bool(payload["maintenance"])
         if "maintenance_message" in payload:
-
-            new_msg = str(
-                payload["maintenance_message"]
-            ).strip()
-
-            state["maintenance_message"] = (
-                new_msg or DEFAULT_MAINTENANCE_MESSAGE
-            )
-
+            new_msg = str(payload["maintenance_message"]).strip()
+            state["maintenance_message"] = new_msg or DEFAULT_MAINTENANCE_MESSAGE
         save_admin_state(state)
-
     return jsonify(state)
+
+
+@app.route("/api/banned")
+@login_required
+def api_banned():
+    banned = _load_json(BANNED_FILE, {})
+    return jsonify(banned)
+
+
+@app.route("/api/unban", methods=["POST"])
+@login_required
+def api_unban():
+    payload = request.get_json(silent=True) or {}
+    chat_id = payload.get("chat_id")
+    if not chat_id:
+        return jsonify({"success": False, "error": "Thiếu chat_id"})
+
+    banned = _load_json(BANNED_FILE, {})
+    if chat_id in banned:
+        del banned[chat_id]
+        _save_json(BANNED_FILE, banned)
+        return jsonify({"success": True})
+    else:
+        return jsonify({"success": False, "error": "User không bị ban"})
 
 
 # ============================================================
@@ -892,11 +952,7 @@ def api_maintenance():
 # ============================================================
 
 if __name__ == "__main__":
-
-    port = int(
-        os.getenv("ADMIN_PORT", "8080")
-    )
-
+    port = int(os.getenv("ADMIN_PORT", "8080"))
     print()
     print("====================================")
     print("🐾 BRINGH ADMIN ĐANG CHẠY")
@@ -906,8 +962,4 @@ if __name__ == "__main__":
     print("====================================")
     print()
 
-    app.run(
-        host="0.0.0.0",
-        port=port,
-        debug=False
-    )
+    app.run(host="0.0.0.0", port=port, debug=False)
