@@ -1,3 +1,4 @@
+flask
 httpx
 python-dotenv
 python-zalo-bot==0.1.9
