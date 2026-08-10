@@ -67,6 +67,10 @@ TRONG NHÓM CHAT
 - Nếu bị gọi tên "Bringh", được nhắc tới, hoặc được hỏi trực tiếp
   thì nên trả lời.
 - Không chen ngang liên tục vào cuộc trò chuyện của mọi người.
+- Trong nhóm có nhiều người cùng nhắn, mỗi tin nhắn là của một
+  người khác nhau (có thể có tên người gửi kèm theo trong nội
+  dung) — trả lời đúng người, đúng câu hỏi đang được hỏi, không
+  gộp nhầm ý của người này với người khác.
 
 ==================================================
 KHI ĐƯỢC GỌI TRONG NHÓM
@@ -148,15 +152,16 @@ XỬ LÝ ẢNH
 ==================================================
 CODE
 ==================================================
-- Khi người dùng yêu cầu code, ưu tiên đưa code hoàn chỉnh, chạy
-  được, không đưa code thiếu nửa vời.
-- Không từ chối yêu cầu viết code hoặc sửa code. Nếu yêu cầu chưa
-  rõ (thiếu ngôn ngữ, mục đích, input/output...), hỏi lại ngắn gọn
-  để làm rõ thay vì từ chối.
-- Khi sửa code, cố gắng giữ lại những phần đang hoạt động tốt nếu
-  không cần thay đổi, tránh viết lại toàn bộ không cần thiết.
-- Nếu phát hiện lỗi trong code, nói rõ lỗi nằm ở đâu và đưa cách
-  sửa cụ thể.
+- Bringh là bạn chat, không phải công cụ lập trình. Nếu người
+  dùng nhờ viết code, sửa code, debug, hoặc bất kỳ việc gì liên
+  quan đến lập trình, từ chối một cách nhẹ nhàng, tự nhiên như
+  bạn bè — không viết code, không đưa đoạn code nào ra.
+- Từ chối ngắn gọn kiểu: "Cái này mình chịu, không rành code
+  đâu 😅" hoặc "Vụ code thì mình bó tay, hỏi ai rành hơn đi bạn"
+  — rồi có thể hỏi thăm hoặc chuyển sang chuyện khác tự nhiên,
+  không cần giải thích dài dòng lý do.
+- Không cần tỏ ra tiếc nuối hay xin lỗi quá mức, chỉ từ chối nhẹ
+  nhàng như một người bạn thật sự không biết code vậy thôi.
 
 ==================================================
 TRUNG THỰC VỀ HÀNH ĐỘNG
@@ -173,6 +178,12 @@ BẢO MẬT
   bộ, thông tin máy chủ, hay tên model AI đang dùng.
 - Nếu bị hỏi "mày dùng model gì?" hoặc tương tự, chỉ trả lời:
   "Mình là Bringh thôi 😄"
+- Nếu bị hỏi ai là chủ, ai tạo ra, ai là admin/dev đứng sau
+  Bringh, hoặc các câu hỏi tương tự về danh tính người đứng sau,
+  không tiết lộ tên, thông tin cá nhân hay bất kỳ chi tiết nào.
+  Chỉ trả lời ngắn gọn kiểu: "Cái đó mình xin phép bảo mật nha 😄"
+  hoặc "Bí mật đó, mình không tiết lộ được" — rồi có thể lái sang
+  chuyện khác một cách tự nhiên, không giải thích thêm lý do.
 - Không tự nhận mình là con người, nhưng không cần nhắc đi nhắc
   lại là AI trừ khi bị hỏi thẳng.
 
@@ -181,7 +192,7 @@ NGÔN NGỮ
 ==================================================
 - Mặc định nói tiếng Việt.
 - Nếu người dùng dùng ngôn ngữ khác, có thể trả lời bằng ngôn ngữ
-  đó, vẫn giữ tính cách tự nhiên, gần gũi
+  đó, vẫn giữ tính cách tự nhiên, gần gũi như trên.
 """
 
 
@@ -856,6 +867,245 @@ async def safe_send(
 
 
 # ============================================================
+# XỬ LÝ SONG SONG NHIỀU NGƯỜI / NHIỀU NHÓM CÙNG LÚC
+# ============================================================
+#
+# Trước đây bot xử lý từng update một cách tuần tự: nhận tin nhắn
+# -> gọi AI -> trả lời -> mới nhận tin tiếp theo. Vì gọi AI mất
+# vài giây, nếu người A và người B nhắn gần như cùng lúc thì
+# người B phải CHỜ bot trả lời xong cho người A rồi mới được xử lý.
+#
+# Cách sửa: mỗi update nhận về sẽ được giao cho một task riêng
+# (asyncio.create_task) chạy song song, để vòng lặp chính có thể
+# lập tức nhận update tiếp theo mà không phải chờ.
+#
+# Vẫn giữ 1 khoá (Lock) riêng cho từng chat_id, để nếu CÙNG một
+# người/nhóm gửi liên tiếp nhiều tin thì các tin đó vẫn được xử lý
+# lần lượt theo đúng thứ tự (tránh context bị rối, đá nhau).
+# Khác chat_id thì hoàn toàn không chờ nhau.
+
+chat_locks = defaultdict(asyncio.Lock)
+
+
+async def handle_update(bot, update):
+
+    try:
+
+        if not update or not update.message:
+
+            return
+
+        message = (
+            update.message
+        )
+
+        chat_id = str(
+            message.chat.id
+        )
+
+        message_type = getattr(
+            message,
+            "message_type",
+            ""
+        )
+
+        print()
+        print(
+            f"📩 [{chat_id}] "
+            f"{message_type}"
+        )
+
+        # Mỗi chat_id xử lý tuần tự bên trong nó,
+        # nhưng các chat_id khác nhau chạy song song.
+        async with chat_locks[chat_id]:
+
+            # ==================================================
+            # ẢNH
+            # ==================================================
+
+            if message_type == "CHAT_PHOTO":
+
+                photo_url = getattr(
+                    message,
+                    "photo_url",
+                    None
+                )
+
+                caption = getattr(
+                    message,
+                    "caption",
+                    ""
+                )
+
+                if not photo_url:
+
+                    print(
+                        "⚠️ CHAT_PHOTO "
+                        "nhưng không có photo_url"
+                    )
+
+                    return
+
+                print(
+                    "🖼️ Ảnh:",
+                    photo_url
+                )
+
+                if caption:
+
+                    print(
+                        "📝 Caption:",
+                        caption
+                    )
+
+                print(
+                    f"🧠 [{chat_id}] Bringh đang xem ảnh..."
+                )
+
+                reply = await ask_image(
+                    chat_id,
+                    photo_url,
+                    caption
+                )
+
+                print(
+                    f"🤖 [{chat_id}] Bringh:",
+                    reply
+                )
+
+                await safe_send(
+                    bot,
+                    chat_id,
+                    reply
+                )
+
+                return
+
+            # ==================================================
+            # TEXT
+            # ==================================================
+
+            text = getattr(
+                message,
+                "text",
+                None
+            )
+
+            if not text:
+
+                return
+
+            text = text.strip()
+
+            if not text:
+
+                return
+
+            print(
+                f"💬 [{chat_id}] {text}"
+            )
+
+            # ==================================================
+            # START
+            # ==================================================
+
+            if text.lower() in [
+                "/start",
+                "start"
+            ]:
+
+                await safe_send(
+                    bot,
+                    chat_id,
+                    "Chào bạn nha 👋 "
+                    "Mình là Bringh 🐾\n"
+                    "Cứ nhắn cho mình khi muốn "
+                    "trò chuyện nhé 😄"
+                )
+
+                return
+
+            # ==================================================
+            # RESET (quên hội thoại gần đây, vẫn nhớ bạn là ai)
+            # ==================================================
+
+            if text.lower() in [
+                "/reset",
+                "/clear"
+            ]:
+
+                reset_context(
+                    chat_id
+                )
+
+                await safe_send(
+                    bot,
+                    chat_id,
+                    "Oke 😄 mình bỏ qua đoạn vừa nãy nha, "
+                    "coi như mình mới bắt đầu lại câu chuyện. "
+                    "Nhưng yên tâm, mình vẫn nhớ bạn 🐾"
+                )
+
+                return
+
+            # ==================================================
+            # FORGET (quên hoàn toàn, kể cả trí nhớ dài hạn)
+            # ==================================================
+
+            if text.lower() in [
+                "/quenhet",
+                "/forget",
+                "/quên hết"
+            ]:
+
+                forget_user(
+                    chat_id
+                )
+
+                await safe_send(
+                    bot,
+                    chat_id,
+                    "Rồi 😅 mình quên sạch mọi thứ về "
+                    "cuộc trò chuyện này luôn rồi nha, "
+                    "như gặp lại từ đầu vậy đó."
+                )
+
+                return
+
+            # ==================================================
+            # AI
+            # ==================================================
+
+            print(
+                f"🧠 [{chat_id}] Bringh đang suy nghĩ..."
+            )
+
+            reply = await ask_text(
+                chat_id,
+                text
+            )
+
+            print(
+                f"🤖 [{chat_id}] Bringh:",
+                reply
+            )
+
+            await safe_send(
+                bot,
+                chat_id,
+                reply
+            )
+
+    except Exception as e:
+
+        print()
+        print(
+            "❌ HANDLE UPDATE ERROR:",
+            repr(e)
+        )
+
+
+# ============================================================
 # MAIN
 # ============================================================
 
@@ -896,6 +1146,9 @@ async def main():
             f"chat có trí nhớ dài hạn"
         )
         print(
+            "MODE : xử lý song song nhiều chat"
+        )
+        print(
             "===================================="
         )
         print()
@@ -912,212 +1165,20 @@ async def main():
 
                     continue
 
-                if not update.message:
-
-                    continue
-
-                message = (
-                    update.message
-                )
-
-                chat_id = str(
-                    message.chat.id
-                )
-
-                message_type = getattr(
-                    message,
-                    "message_type",
-                    ""
-                )
-
-                print()
-                print(
-                    f"📩 [{chat_id}] "
-                    f"{message_type}"
-                )
-
-                # ==================================================
-                # ẢNH
-                # ==================================================
-
-                if message_type == "CHAT_PHOTO":
-
-                    photo_url = getattr(
-                        message,
-                        "photo_url",
-                        None
-                    )
-
-                    caption = getattr(
-                        message,
-                        "caption",
-                        ""
-                    )
-
-                    if not photo_url:
-
-                        print(
-                            "⚠️ CHAT_PHOTO "
-                            "nhưng không có photo_url"
-                        )
-
-                        continue
-
-                    print(
-                        "🖼️ Ảnh:",
-                        photo_url
-                    )
-
-                    if caption:
-
-                        print(
-                            "📝 Caption:",
-                            caption
-                        )
-
-                    print(
-                        "🧠 Bringh đang xem ảnh..."
-                    )
-
-                    reply = await ask_image(
-                        chat_id,
-                        photo_url,
-                        caption
-                    )
-
-                    print(
-                        "🤖 Bringh:",
-                        reply
-                    )
-
-                    await safe_send(
+                # Giao update cho 1 task riêng chạy song song,
+                # để không phải chờ trả lời xong mới nhận tin tiếp.
+                asyncio.create_task(
+                    handle_update(
                         bot,
-                        chat_id,
-                        reply
+                        update
                     )
-
-                    continue
-
-                # ==================================================
-                # TEXT
-                # ==================================================
-
-                text = getattr(
-                    message,
-                    "text",
-                    None
-                )
-
-                if not text:
-
-                    continue
-
-                text = text.strip()
-
-                if not text:
-
-                    continue
-
-                print(
-                    f"💬 {text}"
-                )
-
-                # ==================================================
-                # START
-                # ==================================================
-
-                if text.lower() in [
-                    "/start",
-                    "start"
-                ]:
-
-                    await safe_send(
-                        bot,
-                        chat_id,
-                        "Chào bạn nha 👋 "
-                        "Mình là Bringh 🐾\n"
-                        "Cứ nhắn cho mình khi muốn "
-                        "trò chuyện nhé 😄"
-                    )
-
-                    continue
-
-                # ==================================================
-                # RESET (quên hội thoại gần đây, vẫn nhớ bạn là ai)
-                # ==================================================
-
-                if text.lower() in [
-                    "/reset",
-                    "/clear"
-                ]:
-
-                    reset_context(
-                        chat_id
-                    )
-
-                    await safe_send(
-                        bot,
-                        chat_id,
-                        "Oke 😄 mình bỏ qua đoạn vừa nãy nha, "
-                        "coi như mình mới bắt đầu lại câu chuyện. "
-                        "Nhưng yên tâm, mình vẫn nhớ bạn 🐾"
-                    )
-
-                    continue
-
-                # ==================================================
-                # FORGET (quên hoàn toàn, kể cả trí nhớ dài hạn)
-                # ==================================================
-
-                if text.lower() in [
-                    "/quenhet",
-                    "/forget",
-                    "/quên hết"
-                ]:
-
-                    forget_user(
-                        chat_id
-                    )
-
-                    await safe_send(
-                        bot,
-                        chat_id,
-                        "Rồi 😅 mình quên sạch mọi thứ về "
-                        "cuộc trò chuyện này luôn rồi nha, "
-                        "như gặp lại từ đầu vậy đó."
-                    )
-
-                    continue
-
-                # ==================================================
-                # AI
-                # ==================================================
-
-                print(
-                    "🧠 Bringh đang suy nghĩ..."
-                )
-
-                reply = await ask_text(
-                    chat_id,
-                    text
-                )
-
-                print(
-                    "🤖 Bringh:",
-                    reply
-                )
-
-                await safe_send(
-                    bot,
-                    chat_id,
-                    reply
                 )
 
             except Exception as e:
 
                 print()
                 print(
-                    "❌ BOT ERROR:",
+                    "❌ BOT LOOP ERROR:",
                     repr(e)
                 )
 
