@@ -1,0 +1,42 @@
+{
+  "services": {
+    "bot": {
+      "type": "worker",
+      "startCommand": "python bot/app.py",
+      "env": {
+        "ZALO_BOT_TOKEN": "${{ZALO_BOT_TOKEN}}",
+        "MISTRAL_API_KEY": "${{MISTRAL_API_KEY}}",
+        "ADMIN_PASSWORD": "${{ADMIN_PASSWORD}}",
+        "SECRET_KEY": "${{SECRET_KEY}}",
+        "BRINGH_DATA_DIR": "/app/data",
+        "OCR_PROVIDER": "easyocr"
+      },
+      "volumes": [
+        {
+          "path": "/app/data",
+          "name": "bringh-data"
+        }
+      ]
+    },
+    "admin": {
+      "type": "web",
+      "port": 8080,
+      "startCommand": "python admin/app.py",
+      "env": {
+        "ZALO_BOT_TOKEN": "${{ZALO_BOT_TOKEN}}",
+        "MISTRAL_API_KEY": "${{MISTRAL_API_KEY}}",
+        "ADMIN_PASSWORD": "${{ADMIN_PASSWORD}}",
+        "SECRET_KEY": "${{SECRET_KEY}}",
+        "BRINGH_DATA_DIR": "/app/data",
+        "ADMIN_PORT": "8080",
+        "OCR_PROVIDER": "easyocr"
+      },
+      "volumes": [
+        {
+          "path": "/app/data",
+          "name": "bringh-data"
+        }
+      ]
+    }
+  }
+}
