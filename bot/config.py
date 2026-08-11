@@ -92,6 +92,11 @@ ADMIN_PORT = int(os.getenv("ADMIN_PORT", 8080))
 SECRET_KEY = os.getenv("SECRET_KEY", os.urandom(32).hex())
 
 # ============================================================
+# ADMIN SETTINGS (for chart)
+# ============================================================
+DAYS_FOR_CHART = int(os.getenv("DAYS_FOR_CHART", 14))
+
+# ============================================================
 # LOGGING
 # ============================================================
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")

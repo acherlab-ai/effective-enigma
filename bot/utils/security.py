@@ -330,5 +330,71 @@ class ContentFilter:
         return text
 
 
-# Global content filter instance
+# ============================================================
+# BANNED USERS MANAGEMENT
+# ============================================================
+
+class BannedManager:
+    """
+    Manages banned users list.
+    Uses JSON file for storage (for backward compatibility).
+    """
+    
+    def __init__(self):
+        from bot.config import BANNED_FILE
+        self._banned_file = BANNED_FILE
+    
+    def load_banned(self) -> dict:
+        """Load banned users from file."""
+        import json
+        if not self._banned_file.exists():
+            return {}
+        try:
+            with open(self._banned_file, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    
+    def save_banned(self, banned: dict):
+        """Save banned users to file."""
+        import json
+        try:
+            tmp_path = self._banned_file.with_suffix(".tmp")
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(banned, f, ensure_ascii=False, indent=2)
+            tmp_path.replace(self._banned_file)
+        except Exception as e:
+            print(f"Error saving banned users: {e}")
+    
+    def is_banned(self, chat_id: str) -> bool:
+        """Check if a user is banned."""
+        return chat_id in self.load_banned()
+    
+    def ban_user(self, chat_id: str, reason: str = "prompt injection / jailbreak"):
+        """Ban a user."""
+        from datetime import datetime
+        banned = self.load_banned()
+        banned[chat_id] = {
+            "reason": reason,
+            "banned_at": datetime.now().isoformat()
+        }
+        self.save_banned(banned)
+        print(f"🚫 Banned {chat_id} - Reason: {reason}")
+
+
+# Global instances
+banned_manager = BannedManager()
 content_filter = ContentFilter()
+
+# Backward compatible functions
+def load_banned():
+    return banned_manager.load_banned()
+
+def is_banned(chat_id: str) -> bool:
+    return banned_manager.is_banned(chat_id)
+
+def ban_user(chat_id: str, reason: str = "prompt injection / jailbreak"):
+    banned_manager.ban_user(chat_id, reason)
+
+def save_banned(banned: dict):
+    banned_manager.save_banned(banned)
