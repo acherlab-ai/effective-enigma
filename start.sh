@@ -3,6 +3,9 @@
 # Bringh Bot Start Script
 # =======================
 
+# Set PYTHONPATH so Python can find modules
+export PYTHONPATH=/app:$PYTHONPATH
+
 # Ensure data directory exists
 mkdir -p /app/data
 

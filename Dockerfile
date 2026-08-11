@@ -43,7 +43,10 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD python -c "import httpx; httpx.get('http://localhost:8080').raise_for_status()" || exit 1
 
+# Set PYTHONPATH so Python can find the bot and admin modules
+ENV PYTHONPATH=/app
+
 # Start both bot and admin
 # Note: For production, you might want to use a process manager like supervisord
 # But for Railway, we'll use a simple shell script
-CMD ["/bin/bash", "-c", "python bot/app.py & python admin/app.py & wait"]
+CMD ["/bin/bash", "-c", "export PYTHONPATH=/app:$PYTHONPATH && python -m bot.app & python -m admin.app & wait"]

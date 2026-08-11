@@ -5,8 +5,8 @@
 # For Railway, use the railway.json instead
 
 # If using Honcho (for local development)
-# web: python admin/app.py
-# worker: python bot/app.py
+# web: python -m admin.app
+# worker: python -m bot.app
 
 # For Railway, we'll use a custom start script
 web: bash start.sh
